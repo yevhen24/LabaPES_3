@@ -6,13 +6,12 @@
   ******************************************************************************
   * @attention
   *
-  * <h2><center>&copy; Copyright (c) 2022 STMicroelectronics.
-  * All rights reserved.</center></h2>
+  * Copyright (c) 2022 STMicroelectronics.
+  * All rights reserved.
   *
-  * This software component is licensed by ST under BSD 3-Clause license,
-  * the "License"; You may not use this file except in compliance with the
-  * License. You may obtain a copy of the License at:
-  *                        opensource.org/licenses/BSD-3-Clause
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
   *
   ******************************************************************************
   */
@@ -43,12 +42,8 @@
 /* Private variables ---------------------------------------------------------*/
 osThreadId defaultTaskHandle;
 /* USER CODE BEGIN PV */
-
-uint8_t flag_btn = 1;
-uint16_t btn = 0;
-uint8_t flag_irq = 0;
-uint32_t time_irq = 0;
-
+uint8_t flag_btn = 0;
+uint8_t flag_irq = 1;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -57,12 +52,15 @@ static void MX_GPIO_Init(void);
 void StartDefaultTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
-void Task1(void *pvParameters);
-void Task2(void *pvParameters);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+SemaphoreHandle_t xSemaphore;
+
+void ButtonPress(void *argument);
+void LedBlink(void *argument);
 
 /* USER CODE END 0 */
 
@@ -104,6 +102,7 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
+  xSemaphore = xSemaphoreCreateBinary();
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
@@ -121,8 +120,11 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
-  xTaskCreate(Task1, "Buttom read", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
-  xTaskCreate(Task2, "Leds work", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
+  if (xSemaphore != NULL)
+  {
+	  xTaskCreate(ButtonPress, "Button", 128, NULL, 2, NULL);
+	  xTaskCreate(LedBlink, "LED", 128, NULL, 1, NULL);
+  }
   /* USER CODE END RTOS_THREADS */
 
   /* Start scheduler */
@@ -201,11 +203,11 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, LED1_Pin|LED2_Pin|LED3_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : BTN1_Pin */
-  GPIO_InitStruct.Pin = BTN1_Pin;
+  /*Configure GPIO pin : BTN_Pin */
+  GPIO_InitStruct.Pin = BTN_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(BTN1_GPIO_Port, &GPIO_InitStruct);
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  HAL_GPIO_Init(BTN_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : LED1_Pin LED2_Pin LED3_Pin */
   GPIO_InitStruct.Pin = LED1_Pin|LED2_Pin|LED3_Pin;
@@ -221,45 +223,9 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-void Task1 (void *pvParameters)
+void LedBlink(void *argument)
 {
-	for(;;)
-	{
-		/*if(HAL_GPIO_ReadPin(BTN1_GPIO_Port,BTN1_Pin)==GPIO_PIN_SET)
-		{
-			while(HAL_GPIO_ReadPin(BTN1_GPIO_Port,BTN1_Pin)==GPIO_PIN_SET)
-			{
-				vTaskDelay(200);
-			}
-			btn = 1;
-		}
-
-		if(HAL_GPIO_ReadPin(BTN1_GPIO_Port,BTN1_Pin)==GPIO_PIN_RESET)
-		{
-			while(HAL_GPIO_ReadPin(BTN1_GPIO_Port,BTN1_Pin)==GPIO_PIN_RESET)
-			{
-				vTaskDelay(200);
-			}
-			btn = 0;
-		}
-		osDelay(100);
-		*/
-		if(flag_irq && (HAL_GetTick() - time_irq) > 200)
-		{
-			__HAL_GPIO_EXTI_CLEAR_IT(BTN1_Pin);
-			NVIC_ClearPendingIRQ(EXTI15_10_IRQn);
-			HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
-
-			flag_irq = 0;
-			flag_btn++;
-			if (flag_btn > 7) flag_btn = 0;
-		}
-	}
-}
-
-void Task2 (void *pvParameters)
-{
-	for(;;)
+	while(1)
 	{
 		switch(flag_btn)
 		{
@@ -306,15 +272,36 @@ void Task2 (void *pvParameters)
 		}
 	}
 }
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+
+void ButtonPress(void *argument)
 {
-	if (GPIO_Pin == BTN1_Pin)
+	while(1)
 	{
-		HAL_NVIC_DisableIRQ(EXTI15_10_IRQn);
-		flag_irq = 1;
-		time_irq = HAL_GetTick();
+		if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdPASS)
+		{
+			osDelay(150);
+			flag_btn++;
+			if (flag_btn > 7) flag_btn = 0;
+			flag_irq = 1;
+		}
 	}
 }
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+	static BaseType_t xHigherPriorityTaskWoken;
+	if (GPIO_Pin == BTN_Pin)
+	{
+		if (flag_irq == 1)
+		{
+			flag_irq = 0;
+			xHigherPriorityTaskWoken = pdFALSE;
+			xSemaphoreGiveFromISR(xSemaphore, &xHigherPriorityTaskWoken);
+			portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+		}
+	}
+}
+
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -333,6 +320,27 @@ void StartDefaultTask(void const * argument)
     osDelay(1);
   }
   /* USER CODE END 5 */
+}
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM1 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM1) {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
 }
 
 /**
@@ -367,4 +375,3 @@ void assert_failed(uint8_t *file, uint32_t line)
 }
 #endif /* USE_FULL_ASSERT */
 
-/************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/
